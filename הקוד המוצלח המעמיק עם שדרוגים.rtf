@@ -1,0 +1,1034 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 #include <Trade\\Trade.mqh>\
+#include <Trade\\DealInfo.mqh>\
+CTrade trade;\
+\
+input double OBProximityThreshold = 1.01;\
+input double EntryScoreThreshold = 60.0;\
+input int MaxTradesPerMinute = 5;\
+input double DefaultLotSize = 0.01;\
+input double AccountRiskPercent = 0.25;\
+input double MinProfitToClose = 2000.0;\
+input double TrailingStartProfit = 10.0;\
+input double TrailingStopDistance = 15.0;\
+input int MaxOpenTrades = 2;\
+input double MaxFloatingDrawdownPercent = 2.0;\
+input double DynamicTPMultiplier = 3.0; // TP \uc0\u1497 \u1495 \u1505 \u1497  \u1500 \u1505 \u1497 \u1499 \u1493 \u1503 \
+input double DynamicTrailFactor = 1.5;   // \uc0\u1497 \u1495 \u1505  TP \u1500 \u1492 \u1508 \u1506 \u1500 \u1514  trailing \u1502 \u1514 \u1511 \u1491 \u1501 \
+input double ATRMultiplier = 2.0; \
+input double MaxAllowedRiskPips = 200.0; // \uc0\u1502 \u1504 \u1497 \u1506 \u1514  SL \u1512 \u1495 \u1489  \u1502 \u1491 \u1497 \
+input double ATRTrailingMultiplier = 1.5;\
+static int tradeCounter = 0;\
+static int successCounter = 0;\
+static double lastSuccessRate = 0.0;\
+static bool freezeParameters = false;\
+static datetime lastResetTime = 0;\
+\
+// \uc0\u1508 \u1512 \u1502 \u1496 \u1512 \u1497 \u1501  \u1488 \u1491 \u1508 \u1496 \u1497 \u1489 \u1497 \u1497 \u1501  - \u1488 \u1514 \u1495 \u1493 \u1500  \u1512 \u1488 \u1513 \u1493 \u1504 \u1497  (\u1488 \u1508 \u1513 \u1512  \u1490 \u1501  input \u1500 \u1508 \u1497  \u1492 \u1510 \u1493 \u1512 \u1498 )\
+double adaptiveEntryScoreBuy = 50.0;\
+int adaptiveRetestBarsBuy = 3;\
+int adaptiveLookbackBuy = 200;\
+\
+// --- \uc0\u1508 \u1512 \u1502 \u1496 \u1512 \u1497 \u1501  \u1488 \u1491 \u1508 \u1496 \u1497 \u1489 \u1497 \u1497 \u1501  \u1500 -SELL ---\
+double adaptiveEntryScoreSell = 50.0;\
+int adaptiveRetestBarsSell = 3;\
+int adaptiveLookbackSell = 200;\
+\
+// --- \uc0\u1508 \u1512 \u1502 \u1496 \u1512 \u1497 \u1501  \u1502 \u1513 \u1493 \u1514 \u1508 \u1497 \u1501  ---\
+int trendLookback = 100;\
+int volumeLookback = 30;\
+int rsiLookback = 14;\
+int atrPeriod = 14;\
+int bosLookback = 20;\
+int chochLookback = 20;\
+\
+// --- \uc0\u1502 \u1493 \u1504 \u1497 \u1501  \u1504 \u1508 \u1512 \u1491 \u1497 \u1501  \u1500 -BUY \u1493 \u1500 -SELL ---\
+int tradeCounterBuy = 0;\
+int successCounterBuy = 0;\
+\
+int tradeCounterSell = 0;\
+int successCounterSell = 0;\
+\
+// \uc0\u1491 \u1490 \u1500 \u1497 \u1501  \u1500 \u1492 \u1511 \u1508 \u1488 \u1514  \u1499 \u1500  \u1508 \u1512 \u1502 \u1496 \u1512  \u1489 \u1504 \u1508 \u1512 \u1491 \
+static bool freezeAdaptiveLookback = false;\
+static bool freezeAdaptiveRetestBars = false;\
+static bool freezeAdaptiveEntryScore = false;\
+\
+static bool freezeTrendLookback = false;\
+static bool freezeVolumeLookback = false;\
+static bool freezeRsiLookback = false;\
+static bool freezeAtrPeriod = false;\
+static bool freezeBosLookback = false;\
+static bool freezeChochLookback = false;\
+\
+// \uc0\u1490 \u1489 \u1493 \u1500 \u1493 \u1514  \u1500 \u1508 \u1512 \u1502 \u1496 \u1512 \u1497 \u1501  \u1500 \u1502 \u1504 \u1493 \u1506  \u1495 \u1512 \u1497 \u1490 \u1493 \u1514 \
+#define ENTRY_SCORE_MIN 40.0\
+#define ENTRY_SCORE_MAX 100.0\
+\
+#define ADAPTIVE_RETEST_BARS_MIN 1\
+#define ADAPTIVE_RETEST_BARS_MAX 10\
+\
+#define ADAPTIVE_LOOKBACK_MIN 5\
+#define ADAPTIVE_LOOKBACK_MAX 99999\
+\
+#define TREND_LOOKBACK_MIN 5\
+#define TREND_LOOKBACK_MAX 99999\
+\
+#define VOLUME_LOOKBACK_MIN 5\
+#define VOLUME_LOOKBACK_MAX 99999\
+\
+#define RSI_LOOKBACK_MIN 5\
+#define RSI_LOOKBACK_MAX 99999\
+\
+#define ATR_PERIOD_MIN 5\
+#define ATR_PERIOD_MAX 99999\
+\
+#define BOS_LOOKBACK_MIN 5\
+#define BOS_LOOKBACK_MAX 99999\
+\
+#define CHOCH_LOOKBACK_MIN 5\
+#define CHOCH_LOOKBACK_MAX 99999\
+\
+string symbols[4] = \{"EURUSD", "GBPUSD", "XAUUSD", "USDJPY"\};\
+\
+int tradesOpened = 0;\
+datetime lastMinute = 0;\
+\
+void UpdateAdaptiveParameters(bool isBuy)\
+\{\
+    datetime now = TimeCurrent();\
+\
+    // \uc0\u1488 \u1497 \u1508 \u1493 \u1505  \u1493 \u1511 \u1508 \u1497 \u1488 \u1514  \u1508 \u1512 \u1502 \u1496 \u1512 \u1497 \u1501  - \u1494 \u1492  \u1491 \u1493 \u1502 \u1492  \u1500 \u1493 \u1490 \u1497 \u1511 \u1492  \u1513 \u1500 \u1508 \u1504 \u1497 \
+    if (freezeParameters)\
+    \{\
+        if (now - lastResetTime > 86400)\
+        \{\
+            freezeParameters = false; // \uc0\u1513 \u1495 \u1512 \u1493 \u1512  \u1492 \u1511 \u1508 \u1488 \u1492 \
+            lastResetTime = now;\
+            if (isBuy)\
+            \{\
+                tradeCounterBuy = 0;\
+                successCounterBuy = 0;\
+            \}\
+            else\
+            \{\
+                tradeCounterSell = 0;\
+                successCounterSell = 0;\
+            \}\
+        \}\
+        else\
+            return;\
+    \}\
+\
+    // \uc0\u1489 \u1495 \u1497 \u1512 \u1514  \u1492 \u1502 \u1513 \u1514 \u1504 \u1497 \u1501  \u1492 \u1502 \u1514 \u1488 \u1497 \u1502 \u1497 \u1501  \u1500 \u1508 \u1497  \u1499 \u1497 \u1493 \u1493 \u1503 \
+    int tradeCounter = isBuy ? tradeCounterBuy : tradeCounterSell;\
+    int successCounter = isBuy ? successCounterBuy : successCounterSell;\
+    double adaptiveEntryScore = isBuy ? adaptiveEntryScoreBuy : adaptiveEntryScoreSell;\
+    int adaptiveRetestBars = isBuy ? adaptiveRetestBarsBuy : adaptiveRetestBarsSell;\
+    int adaptiveLookback = isBuy ? adaptiveLookbackBuy : adaptiveLookbackSell;\
+\
+    if (tradeCounter >= 100)\
+    \{\
+        double winRate = 100.0 * successCounter / tradeCounter;\
+        lastSuccessRate = winRate;\
+\
+        if (winRate < 70.0)\
+        \{\
+            adaptiveEntryScore = MathMax(adaptiveEntryScore - 5.0, ENTRY_SCORE_MIN);\
+            adaptiveRetestBars = MathMin(adaptiveRetestBars + 1, ADAPTIVE_RETEST_BARS_MAX);\
+            adaptiveLookback = MathMin(adaptiveLookback + 100, ADAPTIVE_LOOKBACK_MAX);\
+            trendLookback = MathMin(trendLookback + 20, TREND_LOOKBACK_MAX);\
+            volumeLookback = MathMin(volumeLookback + 10, VOLUME_LOOKBACK_MAX);\
+            rsiLookback = MathMin(rsiLookback + 10, RSI_LOOKBACK_MAX);\
+            atrPeriod = MathMin(atrPeriod + 2, ATR_PERIOD_MAX);\
+            bosLookback = MathMin(bosLookback + 10, BOS_LOOKBACK_MAX);\
+            chochLookback = MathMin(chochLookback + 10, CHOCH_LOOKBACK_MAX);\
+        \}\
+        else\
+        \{\
+            adaptiveEntryScore = MathMin(adaptiveEntryScore + 2.5, ENTRY_SCORE_MAX);\
+            adaptiveRetestBars = MathMax(adaptiveRetestBars - 1, ADAPTIVE_RETEST_BARS_MIN);\
+            adaptiveLookback = MathMax(adaptiveLookback - 50, ADAPTIVE_LOOKBACK_MIN);\
+            trendLookback = MathMax(trendLookback - 10, TREND_LOOKBACK_MIN);\
+            volumeLookback = MathMax(volumeLookback - 5, VOLUME_LOOKBACK_MIN);\
+            rsiLookback = MathMax(rsiLookback - 5, RSI_LOOKBACK_MIN);\
+            atrPeriod = MathMax(atrPeriod - 1, ATR_PERIOD_MIN);\
+            bosLookback = MathMax(bosLookback - 10, BOS_LOOKBACK_MIN);\
+            chochLookback = MathMax(chochLookback - 10, CHOCH_LOOKBACK_MIN);\
+        \}\
+\
+        PrintFormat("Adaptive Update: WinRate=%.2f%% | EntryScore=%.2f | RetestBars=%d | Lookback=%d",\
+                    winRate, adaptiveEntryScore, adaptiveRetestBars, adaptiveLookback);\
+\
+        // \uc0\u1488 \u1497 \u1508 \u1493 \u1505  \u1502 \u1493 \u1504 \u1497 \u1501  \u1500 \u1488 \u1495 \u1512  \u1506 \u1491 \u1499 \u1493 \u1503  \u1508 \u1512 \u1502 \u1496 \u1512 \u1497 \u1501 \
+        tradeCounter = 0;\
+        successCounter = 0;\
+        lastResetTime = now;\
+    \}\
+\
+    if (tradeCounter >= 42 && successCounter == tradeCounter)\
+    \{\
+        freezeParameters = true;\
+        PrintFormat("\uc0\u9989  \u1508 \u1512 \u1502 \u1496 \u1512 \u1497 \u1501  \u1502 \u1493 \u1511 \u1508 \u1488 \u1497 \u1501  \'96 100%% \u1492 \u1510 \u1500 \u1495 \u1492  \u1506 \u1500  %d \u1506 \u1505 \u1511 \u1488 \u1493 \u1514 ", tradeCounter);\
+        lastResetTime = now;\
+    \}\
+\}\
+\
+bool GetATR(string symbol, int period, double &atrValue) \{\
+    int handle = iATR(symbol, PERIOD_H1, period);\
+    if (handle == INVALID_HANDLE)\
+        return false;\
+    double buffer[];\
+    if (CopyBuffer(handle, 0, 0, 1, buffer) <= 0)\
+        return false;\
+    atrValue = buffer[0];\
+    return true;\
+\}\
+\
+bool CanOpenNewTrade() \{\
+    if (PositionsTotal() >= MaxOpenTrades)\
+        return false;\
+    double equity = AccountInfoDouble(ACCOUNT_EQUITY);\
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);\
+    double drawdown = 100.0 * (balance - equity) / balance;\
+    return (drawdown < MaxFloatingDrawdownPercent);\
+\}\
+\
+// --- \uc0\u1502 \u1513 \u1514 \u1504 \u1497 \u1501  \u1500 \u1502 \u1506 \u1512 \u1499 \u1514  \u1500 \u1502 \u1497 \u1491 \u1492  \u1506 \u1510 \u1502 \u1497 \u1514  ---\
+\
+struct TradeRecord \{\
+    string symbol;\
+    string direction;\
+    double entryPrice;\
+    double exitPrice;\
+    double profit;\
+    int rsi;\
+    string trend;\
+    double volume;\
+    int score;\
+    datetime closeTime;\
+\};\
+\
+#define MAX_TRADE_HISTORY 1000\
+TradeRecord tradeHistory[MAX_TRADE_HISTORY];\
+int tradeHistoryCount = 0;\
+double entryThreshold = 60.0;\
+\
+// --- \uc0\u1508 \u1493 \u1504 \u1511 \u1510 \u1497 \u1493 \u1514  \u1506 \u1494 \u1512  ---\
+\
+enum MarketTrend \{ TREND_UP, TREND_DOWN, TREND_RANGE \};\
+\
+MarketTrend DetectMarketTrend(string symbol, ENUM_TIMEFRAMES tf = PERIOD_H1, int lookback = 800) \{\
+    double highs[], lows[];\
+    if (CopyHigh(symbol, tf, 0, lookback, highs) <= 0) return TREND_RANGE;\
+    if (CopyLow(symbol, tf, 0, lookback, lows) <= 0) return TREND_RANGE;\
+\
+    int upCount = 0, downCount = 0;\
+    for (int i = 1; i < lookback - 1; i++) \{\
+        if (highs[i] > highs[i + 1] && lows[i] > lows[i + 1]) upCount++;\
+        else if (highs[i] < highs[i + 1] && lows[i] < lows[i + 1]) downCount++;\
+    \}\
+\
+    if (upCount > lookback * 0.6) return TREND_UP;\
+    if (downCount > lookback * 0.6) return TREND_DOWN;\
+    return TREND_RANGE;\
+\}\
+\
+bool IsBreakOfStructure(string symbol, int direction, int lookback)\
+\{\
+    for(int i = 1; i <= lookback; i++)\
+    \{\
+        double prevHigh = iHigh(symbol, PERIOD_H1, i+1);\
+        double prevLow = iLow(symbol, PERIOD_H1, i+1);\
+        double currHigh = iHigh(symbol, PERIOD_H1, i);\
+        double currLow = iLow(symbol, PERIOD_H1, i);\
+\
+        if(direction == 1 && currHigh > prevHigh)\
+            return true;\
+        if(direction == -1 && currLow < prevLow)\
+            return true;\
+    \}\
+    return false;\
+\}\
+\
+bool IsChochDetected(string symbol, int direction, int lookback)\
+\{\
+    int changes = 0;\
+    for(int i = 1; i < lookback; i++)\
+    \{\
+        double high1 = iHigh(symbol, PERIOD_H1, i);\
+        double low1 = iLow(symbol, PERIOD_H1, i);\
+        double high2 = iHigh(symbol, PERIOD_H1, i+1);\
+        double low2 = iLow(symbol, PERIOD_H1, i+1);\
+\
+        if(direction == 1 && low1 > low2 && high1 > high2)\
+            changes++;\
+        else if(direction == -1 && low1 < low2 && high1 < high2)\
+            changes++;\
+    \}\
+    return changes > (lookback / 3);\
+\}\
+\
+bool IsImpulsiveCandle(string symbol, int direction)\
+\{\
+    double open = iOpen(symbol, PERIOD_M5, 1300);\
+    double close = iClose(symbol, PERIOD_M5, 1300);\
+    double high = iHigh(symbol, PERIOD_M5, 1300);\
+    double low = iLow(symbol, PERIOD_M5, 1300);\
+\
+    double body = MathAbs(close - open);\
+    double range = high - low;\
+\
+    if (range == 0) return false;\
+\
+    double bodyRatio = body / range;\
+\
+    if (direction == 1) // BUY\
+        return (close > open && bodyRatio > 0.6);\
+    else if (direction == -1) // SELL\
+        return (open > close && bodyRatio > 0.6);\
+\
+    return false;\
+\}\
+\
+bool AnalyzeVolume(string symbol, bool isBuy) \{\
+    int lookback = 2000;\
+    long currentVol = iTickVolume(symbol, PERIOD_M15, 0);\
+    if (currentVol <= 0) return false;\
+\
+    long sum = 0;\
+    for (int i = 1; i <= lookback; i++) \{\
+        long v = iTickVolume(symbol, PERIOD_M15, i);\
+        if (v <= 0) return false;\
+        sum += v;\
+    \}\
+    double avg = double(sum) / lookback;\
+\
+    double open = iOpen(symbol, PERIOD_M15, 0);\
+    double close = iClose(symbol, PERIOD_M15, 0);\
+    double high = iHigh(symbol, PERIOD_M15, 0);\
+    double low = iLow(symbol, PERIOD_M15, 0);\
+    double body = MathAbs(close - open);\
+    double range = high - low;\
+\
+    return (currentVol > avg * 2.0 && body >= 0.6 * range);\
+\}\
+\
+int PredictNextCandleDirection(string symbol)\
+\{\
+    double closes[1300];\
+    if (CopyClose(symbol, PERIOD_M5, 0, 1300, closes) != 1300)\
+        return 0;\
+\
+    int upCount = 0, downCount = 0;\
+\
+    for (int i = 1; i < 1300; i++)\
+    \{\
+        if (closes[i - 1] < closes[i])\
+            upCount++;\
+        else if (closes[i - 1] > closes[i])\
+            downCount++;\
+    \}\
+\
+    if (upCount > downCount)\
+        return 1;\
+    else if (downCount > upCount)\
+        return -1;\
+    else\
+        return 0;\
+\}\
+\
+bool GetCandleHighLow(string symbol, double &high, double &low)\
+\{\
+    double highs[1], lows[1];\
+    if (CopyHigh(symbol, PERIOD_M5, 0, 1, highs) != 1 || CopyLow(symbol, PERIOD_M5, 0, 1, lows) != 1)\
+        return false;\
+    high = highs[0];\
+    low = lows[0];\
+    return true;\
+\}\
+\
+bool CheckRSIDivergence(string symbol, ENUM_APPLIED_PRICE priceType = PRICE_CLOSE) \{\
+    int rsi_handle = iRSI(symbol, PERIOD_M30, 14, priceType);\
+    if (rsi_handle == INVALID_HANDLE) return false;\
+\
+    double rsi_buffer[200];\
+    double price_buffer[200];\
+    if (CopyBuffer(rsi_handle, 0, 0, 200, rsi_buffer) != 200) return false;\
+    if (CopyClose(symbol, PERIOD_M30, 0, 200, price_buffer) != 200) return false;\
+\
+    double lastLowPrice = price_buffer[1];\
+    double lastLowRSI = rsi_buffer[1];\
+\
+    for (int i = 2; i < 200; i++) \{\
+        if (price_buffer[i] < lastLowPrice && rsi_buffer[i] > lastLowRSI)\
+            return true;\
+        if (price_buffer[i] > lastLowPrice && rsi_buffer[i] < lastLowRSI)\
+            return true;\
+    \}\
+    return false;\
+\}\
+\
+double CalculateDynamicLotSize(string symbol, double stopLossPrice, double openPrice) \{\
+    double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);\
+    double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);\
+\
+    if (tickValue <= 0 || tickSize <= 0)\
+        return DefaultLotSize;\
+\
+    double priceDiff = MathAbs(openPrice - stopLossPrice);\
+    if (priceDiff == 0 || priceDiff / tickSize > MaxAllowedRiskPips)\
+        return 0.0; // SL \uc0\u1512 \u1495 \u1489  \u1502 \u1491 \u1497  \'96 \u1508 \u1505 \u1493 \u1500 \
+\
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);\
+    double riskAmount = balance * (AccountRiskPercent / 100.0);\
+\
+    double lotSize = riskAmount / ((priceDiff / tickSize) * tickValue);\
+\
+    double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);\
+    double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);\
+    double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);\
+\
+    lotSize = MathMax(minLot, MathMin(maxLot, MathFloor(lotSize / lotStep) * lotStep));\
+\
+    double margin_required;\
+    if (!OrderCalcMargin(ORDER_TYPE_BUY, symbol, lotSize, openPrice, margin_required))\
+        return DefaultLotSize;\
+\
+    double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);\
+    if (margin_required > freeMargin) \{\
+        lotSize = freeMargin / margin_required * lotSize;\
+        lotSize = MathFloor(lotSize / lotStep) * lotStep;\
+        if (lotSize < minLot)\
+            return 0.0;\
+    \}\
+\
+    return lotSize;\
+\}\
+\
+bool PlacePendingOrder(string symbol, ENUM_ORDER_TYPE orderType, double entryPrice, double stopLoss, double takeProfit = 0, string comment = "")\
+\{\
+    if (takeProfit == 0)\
+    \{\
+        if (orderType == ORDER_TYPE_BUY_LIMIT || orderType == ORDER_TYPE_BUY_STOP || orderType == ORDER_TYPE_BUY_STOP_LIMIT)\
+            takeProfit = entryPrice + 3.0 * MathAbs(entryPrice - stopLoss);\
+        else if (orderType == ORDER_TYPE_SELL_LIMIT || orderType == ORDER_TYPE_SELL_STOP || orderType == ORDER_TYPE_SELL_STOP_LIMIT)\
+            takeProfit = entryPrice - 3.0 * MathAbs(stopLoss - entryPrice);\
+    \}\
+\
+    double lotSize = CalculateDynamicLotSize(symbol, stopLoss, entryPrice);\
+    if (lotSize < SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN))\
+    \{\
+        PrintFormat("Lot size too small for pending order on %s", symbol);\
+        return false;\
+    \}\
+\
+    PrintFormat("Placing Pending Order: Symbol=%s Type=%s Entry=%.5f SL=%.5f TP=%.5f Lot=%.2f Comment=%s",\
+                symbol, EnumToString(orderType), entryPrice, stopLoss, takeProfit, lotSize, comment);\
+\
+    MqlTradeRequest request;\
+    MqlTradeResult result;\
+    ZeroMemory(request);\
+    ZeroMemory(result);\
+\
+    request.action = TRADE_ACTION_PENDING;\
+    request.symbol = symbol;\
+    request.volume = lotSize;\
+    request.price = entryPrice;\
+    request.sl = stopLoss;\
+    request.tp = takeProfit;\
+    request.type = orderType;\
+    request.deviation = 10;\
+    request.type_filling = ORDER_FILLING_FOK;\
+    request.magic = 123456;\
+    request.comment = comment;\
+\
+    if (!OrderSend(request, result))\
+    \{\
+        PrintFormat("Failed to place pending order on %s. Error: %d", symbol, GetLastError());\
+        return false;\
+    \}\
+    else if (result.retcode == TRADE_RETCODE_DONE)\
+    \{\
+        PrintFormat("Pending order placed successfully: %s %s at %.5f", EnumToString(orderType), symbol, entryPrice);\
+        return true;\
+    \}\
+    else\
+    \{\
+        PrintFormat("OrderSend returned code %d for %s", result.retcode, symbol);\
+        return false;\
+    \}\
+\}\
+\
+\
+void DeleteExpiredOrders()\
+\{\
+    datetime now = TimeCurrent();\
+    for (int i = OrdersTotal() - 1; i >= 0; i--)\
+    \{\
+        ulong ticket = OrderGetTicket(i);\
+        if (ticket == 0) continue;\
+        if (!OrderSelect(ticket)) continue;\
+\
+        ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);\
+        if (type == ORDER_TYPE_BUY_LIMIT || type == ORDER_TYPE_SELL_LIMIT ||\
+            type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_SELL_STOP ||\
+            type == ORDER_TYPE_BUY_STOP_LIMIT || type == ORDER_TYPE_SELL_STOP_LIMIT)\
+        \{\
+            double orderPrice = OrderGetDouble(ORDER_PRICE_OPEN);\
+            string symbol = OrderGetString(ORDER_SYMBOL);\
+\
+            double bid = SymbolInfoDouble(symbol, SYMBOL_BID);\
+            double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);\
+\
+            bool missed = false;\
+\
+            switch(type)\
+            \{\
+                case ORDER_TYPE_BUY_LIMIT:\
+                    if (bid > orderPrice) missed = true;\
+                    break;\
+                case ORDER_TYPE_SELL_LIMIT:\
+                    if (ask < orderPrice) missed = true;\
+                    break;\
+                case ORDER_TYPE_BUY_STOP:\
+                    if (bid < orderPrice) missed = true;\
+                    break;\
+                case ORDER_TYPE_SELL_STOP:\
+                    if (ask > orderPrice) missed = true;\
+                    break;\
+                case ORDER_TYPE_BUY_STOP_LIMIT:\
+                    if (bid < orderPrice) missed = true;\
+                    break;\
+                case ORDER_TYPE_SELL_STOP_LIMIT:\
+                    if (ask > orderPrice) missed = true;\
+                    break;\
+            \}\
+\
+            datetime expiration = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);\
+\
+            if ((expiration != 0 && now > expiration) || missed)\
+            \{\
+                if (!trade.OrderDelete(ticket))\
+                    PrintFormat("Failed to delete expired or missed order #%I64u. Error: %d", ticket, GetLastError());\
+                else\
+                    PrintFormat("Deleted expired or missed order #%I64u", ticket);\
+            \}\
+        \}\
+    \}\
+\}\
+\
+void CloseProfitablePositions()\
+\{\
+    for (int i = PositionsTotal() - 1; i >= 0; i--)\
+    \{\
+        ulong ticket = PositionGetTicket(i);\
+        if (PositionSelectByTicket(ticket))\
+        \{\
+            double profit = PositionGetDouble(POSITION_PROFIT);\
+            if (profit >= MinProfitToClose)\
+            \{\
+                if (trade.PositionClose(ticket))\
+                    PrintFormat("Closed profitable position #%I64u, profit=%.2f", ticket, profit);\
+                else\
+                    PrintFormat("Failed to close profitable position #%I64u. Error: %d", ticket, GetLastError());\
+            \}\
+        \}\
+    \}\
+\}\
+\
+void ManageTrailingStop() \{\
+    for (int i = PositionsTotal() - 1; i >= 0; i--) \{\
+        ulong ticket = PositionGetTicket(i);\
+        if (!PositionSelectByTicket(ticket)) continue;\
+\
+        string symbol = PositionGetString(POSITION_SYMBOL);\
+        long type = PositionGetInteger(POSITION_TYPE);\
+        double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);\
+        double stopLoss = PositionGetDouble(POSITION_SL);\
+        double volume = PositionGetDouble(POSITION_VOLUME);\
+\
+        double currentPrice = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID)\
+                                                          : SymbolInfoDouble(symbol, SYMBOL_ASK);\
+\
+        double atr = 0.0;\
+        if (!GetATR(symbol, 14, atr)) continue;\
+\
+        double newSL = 0.0;\
+        if (type == POSITION_TYPE_BUY) \{\
+            newSL = currentPrice - atr * ATRTrailingMultiplier;\
+            if (newSL > stopLoss)\
+                trade.PositionModify(ticket, newSL, 0);\
+        \} else \{\
+            newSL = currentPrice + atr * ATRTrailingMultiplier;\
+            if (newSL < stopLoss || stopLoss == 0)\
+                trade.PositionModify(ticket, newSL, 0);\
+        \}\
+    \}\
+\}\
+\
+// --- \uc0\u1508 \u1493 \u1504 \u1511 \u1510 \u1497 \u1493 \u1514  \u1500 \u1494 \u1497 \u1492 \u1493 \u1497  Order Blocks \u1489 -H1 ---\
+\
+bool FindLastBullishOrderBlock(string symbol, int lookback, double &blockHigh, double &blockLow)\
+\{\
+    blockHigh = 0;\
+    blockLow = 0;\
+\
+    for (int i = 1; i <= lookback; i++)\
+    \{\
+        double open_i = iOpen(symbol, PERIOD_H1, i);\
+        double close_i = iClose(symbol, PERIOD_H1, i);\
+        double high_i = iHigh(symbol, PERIOD_H1, i);\
+        double low_i = iLow(symbol, PERIOD_H1, i);\
+\
+        if (close_i > open_i)\
+        \{\
+            double close_next = iClose(symbol, PERIOD_H1, i + 1);\
+            double open_next = iOpen(symbol, PERIOD_H1, i + 1);\
+\
+            if (close_next < open_next)\
+            \{\
+                blockHigh = high_i;\
+                blockLow = low_i;\
+                return true;\
+            \}\
+        \}\
+    \}\
+    return false;\
+\}\
+\
+bool FindLastBearishOrderBlock(string symbol, int lookback, double &blockHigh, double &blockLow)\
+\{\
+    blockHigh = 0;\
+    blockLow = 0;\
+\
+    for (int i = 1; i <= lookback; i++)\
+    \{\
+        double open_i = iOpen(symbol, PERIOD_H1, i);\
+        double close_i = iClose(symbol, PERIOD_H1, i);\
+        double high_i = iHigh(symbol, PERIOD_H1, i);\
+        double low_i = iLow(symbol, PERIOD_H1, i);\
+\
+        if (close_i < open_i)\
+        \{\
+            double close_next = iClose(symbol, PERIOD_H1, i + 1);\
+            double open_next = iOpen(symbol, PERIOD_H1, i + 1);\
+\
+            if (close_next > open_next)\
+            \{\
+                blockHigh = high_i;\
+                blockLow = low_i;\
+                return true;\
+            \}\
+        \}\
+    \}\
+    return false;\
+\}\
+\
+// \uc0\u1508 \u1493 \u1504 \u1511 \u1510 \u1497 \u1497 \u1514  \u1512 \u1497 \u1496 \u1505 \u1496  \u1506 \u1500  9 \u1504 \u1512 \u1493 \u1514  M5\
+bool IsOBRetested(string symbol, double blockHigh, double blockLow, int retestCandles)\
+\{\
+    for (int i = 1; i <= retestCandles; i++)\
+    \{\
+        double wickLow = iLow(symbol, PERIOD_M5, i);\
+        double wickHigh = iHigh(symbol, PERIOD_M5, i);\
+\
+        if (wickLow <= blockHigh && wickHigh >= blockLow)\
+            return true;\
+    \}\
+    return false;\
+\}\
+\
+// --- \uc0\u1513 \u1488 \u1512  \u1492 \u1508 \u1493 \u1504 \u1511 \u1510 \u1497 \u1493 \u1514  \u1506 \u1501  \u1511 \u1512 \u1497 \u1488 \u1493 \u1514  \u1502 \u1506 \u1493 \u1491 \u1499 \u1504 \u1493 \u1514  ---\
+\
+void DrawOrderBlock(string symbol, string name, double high, double low, color clr)\
+\{\
+    datetime time0 = iTime(symbol, PERIOD_H1, 0);\
+    datetime time1 = iTime(symbol, PERIOD_H1, 1);\
+\
+    if (ObjectFind(0, name) >= 0)\
+        ObjectDelete(0, name);\
+\
+    ObjectCreate(0, name, OBJ_RECTANGLE, 0, time1, high, time0, low);\
+    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);\
+    ObjectSetInteger(0, name, OBJPROP_BACK, true);\
+    ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);\
+    ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);\
+\}\
+\
+bool AllowTrade(string symbol, int direction)\
+\{\
+    int marketTrend = DetectMarketTrend(symbol, 20);\
+    if(marketTrend == 0)\
+        return false;\
+\
+    if(direction != marketTrend)\
+        return false;\
+\
+    double OBHigh = 0.0, OBLow = 0.0;\
+    int lookbackOB = 800;\
+    bool OBfound = false;\
+\
+    if(direction == 1)\
+        OBfound = FindLastBullishOrderBlock(symbol, lookbackOB, OBHigh, OBLow);\
+    else if(direction == -1)\
+        OBfound = FindLastBearishOrderBlock(symbol, lookbackOB, OBHigh, OBLow);\
+\
+    if(!OBfound)\
+        return false;\
+\
+    double lastLow = iLow(symbol, PERIOD_H1, 1);\
+    double lastHigh = iHigh(symbol, PERIOD_H1, 1);\
+\
+    if(direction == 1) \{\
+        if(OBLow > lastLow * 1.005)\
+            return false;\
+    \} else \{\
+        if(OBHigh < lastHigh * 0.995)\
+            return false;\
+    \}\
+\
+    return true;\
+\}\
+\
+bool FindBreakoutOrderBlock(string symbol, MarketTrend trend, double &OBHigh, double &OBLow)\{\
+    const int depth = 800;\
+    double highs[], lows[];\
+    if (CopyHigh(symbol, PERIOD_H1, 0, depth, highs) <= 0) return false;\
+    if (CopyLow(symbol, PERIOD_H1, 0, depth, lows) <= 0) return false;\
+\
+    if (trend == TREND_UP) \{\
+        for (int i = depth - 3; i >= 2; i--) \{\
+            if (highs[i] > highs[i - 1] && highs[i] > highs[i - 2]) \{\
+                for (int j = i - 1; j >= 2; j--) \{\
+                    if (lows[j] < lows[j - 1] && lows[j] < lows[j - 2]) \{\
+                        OBHigh = highs[j + 1];\
+                        OBLow = lows[j];\
+                        return true;\
+                    \}\
+                \}\
+                break;\
+            \}\
+        \}\
+    \} else if (trend == TREND_DOWN) \{\
+        for (int i = depth - 3; i >= 2; i--) \{\
+            if (lows[i] < lows[i - 1] && lows[i] < lows[i - 2]) \{\
+                for (int j = i - 1; j >= 2; j--) \{\
+                    if (highs[j] > highs[j - 1] && highs[j] > highs[j - 2]) \{\
+                        OBHigh = highs[j];\
+                        OBLow = lows[j + 1];\
+                        return true;\
+                    \}\
+                \}\
+                break;\
+            \}\
+        \}\
+    \}\
+\
+    return false;\
+\} \
+\
+int CalculateTradeScore(string symbol, int direction)\
+\{\
+    int score = 0;\
+\
+    MarketTrend trend = DetectMarketTrend(symbol, PERIOD_H1, 800);\
+    if ((trend == TREND_UP && direction == 1) || (trend == TREND_DOWN && direction == -1))\
+        score += 20;\
+\
+    if (AnalyzeVolume(symbol, direction == 1))\
+        score += 20;\
+\
+    if (CheckRSIDivergence(symbol))\
+        score += 20;\
+\
+    double OBHigh, OBLow;\
+    bool found = (direction == 1) ? FindLastBullishOrderBlock(symbol, 800, OBHigh, OBLow)\
+                                  : FindLastBearishOrderBlock(symbol, 800, OBHigh, OBLow);\
+    if (found)\
+        score += 20;\
+\
+     const int retestCandles = 9;\
+   if (IsOBRetested(symbol, OBHigh, OBLow, retestCandles))\
+    score += 20;\
+\
+\
+    return score;\
+\}\
+\
+// ExecuteTradeSetup \uc0\u1506 \u1501  \u1513 \u1497 \u1502 \u1493 \u1513  \u1489 \u1470 800 \u1504 \u1512 \u1493 \u1514  \u1500 \u1494 \u1497 \u1492 \u1493 \u1497  OB\
+void ExecuteTradeSetup(string symbol)\
+\{\
+    static int tradesOpened = 0;\
+    static datetime lastResetTradesTime = 0;\
+\
+    if (lastResetTradesTime == 0 || TimeCurrent() - lastResetTradesTime >= 60)\
+    \{\
+        tradesOpened = 0;\
+        lastResetTradesTime = TimeCurrent();\
+    \}\
+\
+    if (tradesOpened >= 5) return;\
+\
+    int direction = PredictNextCandleDirection(symbol);\
+    if (direction == 0) return;\
+\
+    double currentEntryScore = (direction == 1) ? adaptiveEntryScoreBuy : adaptiveEntryScoreSell;\
+    int currentRetestBars = (direction == 1) ? adaptiveRetestBarsBuy : adaptiveRetestBarsSell;\
+    int currentLookback = (direction == 1) ? adaptiveLookbackBuy : adaptiveLookbackSell;\
+\
+    if (!IsBreakOfStructure(symbol, direction, currentLookback)) return;\
+    if (!IsChochDetected(symbol, direction, currentLookback)) return;\
+    if (!IsImpulsiveCandle(symbol, direction)) return;\
+\
+    int score = CalculateTradeScore(symbol, direction);\
+    if (score < currentEntryScore)\
+    \{\
+        PrintFormat("\uc0\u10060  Score \u1504 \u1502 \u1493 \u1498  \u1502 \u1491 \u1497 : %d < %.2f", score, currentEntryScore);\
+        return;\
+    \}\
+\
+    double OBHigh = 0.0, OBLow = 0.0;\
+    bool OBfound = (direction == 1)\
+        ? FindLastBullishOrderBlock(symbol, currentLookback, OBHigh, OBLow)\
+        : FindLastBearishOrderBlock(symbol, currentLookback, OBHigh, OBLow);\
+\
+    if (!OBfound) return;\
+\
+    if (!IsOBRetested(symbol, OBHigh, OBLow, currentRetestBars))\
+    \{\
+        Print("\uc0\u10060  OB \u1500 \u1488  \u1504 \u1489 \u1491 \u1511  \u1502 \u1495 \u1491 \u1513  \u1500 \u1508 \u1497  \u1492 \u1514 \u1504 \u1488 \u1497 \u1501 ");\
+        return;\
+    \}\
+\
+    double lastLow = iLow(symbol, PERIOD_H1, 1);\
+    double lastHigh = iHigh(symbol, PERIOD_H1, 1);\
+\
+    if (direction == 1 && OBLow > lastLow * OBProximityThreshold)\
+    \{\
+        Print("\uc0\u10060  OBLow \u1512 \u1495 \u1493 \u1511  \u1502 \u1491 \u1497  \u1502 \u1492 \u1470 Low \u1492 \u1488 \u1495 \u1512 \u1493 \u1503 ");\
+        return;\
+    \}\
+\
+    if (direction == -1 && OBHigh < lastHigh / OBProximityThreshold)\
+    \{\
+        Print("\uc0\u10060  OBHigh \u1504 \u1502 \u1493 \u1498  \u1502 \u1491 \u1497  \u1502 \u1492 \u1470 High \u1492 \u1488 \u1495 \u1512 \u1493 \u1503 ");\
+        return;\
+    \}\
+\
+    double entryPrice = (direction == 1) ? OBLow * 1.001 : OBHigh * 0.999;\
+    double stopLoss = (direction == 1)\
+        ? OBLow - (OBHigh - OBLow) * 0.5\
+        : OBHigh + (OBHigh - OBLow) * 0.5;\
+\
+    double lotSize = CalculateDynamicLotSize(symbol, stopLoss, entryPrice);\
+    if (lotSize <= 0.0) return;\
+\
+    double atr = 0.0;\
+    double takeProfit = 0.0;\
+\
+    if (GetATR(symbol, atrPeriod, atr)) \{\
+        takeProfit = (direction == 1)\
+            ? entryPrice + ATRMultiplier * atr\
+            : entryPrice - ATRMultiplier * atr;\
+    \} else \{\
+        double risk = MathAbs(entryPrice - stopLoss);\
+        takeProfit = (direction == 1)\
+            ? entryPrice + risk * DynamicTPMultiplier\
+            : entryPrice - risk * DynamicTPMultiplier;\
+    \}\
+\
+    ENUM_ORDER_TYPE type = (direction == 1)\
+        ? ORDER_TYPE_BUY_LIMIT\
+        : ORDER_TYPE_SELL_LIMIT;\
+\
+    bool orderPlaced = PlacePendingOrder(symbol, type, entryPrice, stopLoss, takeProfit, "OB + Score + ATR TP");\
+    if (!orderPlaced) return;\
+\
+    tradesOpened++;\
+    PrintFormat("\uc0\u9989  \u1506 \u1505 \u1511 \u1492  \u1504 \u1508 \u1514 \u1495 \u1492  \u1506 \u1489 \u1493 \u1512  %s \u1489 \u1499 \u1497 \u1493 \u1493 \u1503  %s", symbol, (direction == 1) ? "BUY" : "SELL");\
+\}\
+\
+// --- \uc0\u1502 \u1497 \u1502 \u1493 \u1513  Partial Take Profit \u1500 \u1508 \u1497  \u1513 \u1500 \u1497 \u1513 \u1497 \u1501  ---\
+\
+struct PartialTPFlags\
+\{\
+    bool tp1_done;\
+    bool tp2_done;\
+\};\
+\
+#define MAX_PARTIAL_FLAGS 1024\
+PartialTPFlags partialFlags[MAX_PARTIAL_FLAGS];\
+\
+// \uc0\u1506 \u1494 \u1512  \u1500 \u1502 \u1510 \u1497 \u1488 \u1514  \u1488 \u1497 \u1504 \u1491 \u1511 \u1505  \u1508 \u1493 \u1494 \u1497 \u1510 \u1497 \u1492  \u1489 \u1502 \u1506 \u1512 \u1498  \u1500 \u1508 \u1497  Ticket\
+int FindPartialTPIndex(ulong ticket)\
+\{\
+    for (int i = 0; i < MAX_PARTIAL_FLAGS; i++)\
+    \{\
+        // \uc0\u1488 \u1501  \u1492 \u1488 \u1497 \u1504 \u1491 \u1511 \u1505  \u1512 \u1497 \u1511 , \u1504 \u1499 \u1504 \u1505  \u1493 \u1513 \u1493 \u1502 \u1512  \u1488 \u1514  \u1492 \u1496 \u1497 \u1511 \u1496 \
+        if (partialFlags[i].tp1_done == false && partialFlags[i].tp2_done == false)\
+        \{\
+            partialFlags[i].tp1_done = false;\
+            partialFlags[i].tp2_done = false;\
+            return i;\
+        \}\
+    \}\
+    return -1; // \uc0\u1500 \u1488  \u1504 \u1502 \u1510 \u1488  \u1502 \u1511 \u1493 \u1501  \u1508 \u1504 \u1493 \u1497 \
+\}\
+\
+// \uc0\u1504 \u1497 \u1492 \u1493 \u1500  Partial TP \u1500 \u1508 \u1497  \u1492 \u1513 \u1500 \u1489 \u1497 \u1501  \u1513 \u1492 \u1490 \u1491 \u1512 \u1514 :\
+// TP1 (1:1) \'96 \uc0\u1505 \u1490 \u1497 \u1512 \u1514  \u1513 \u1500 \u1497 \u1513  \u1512 \u1488 \u1513 \u1493 \u1503 .\
+// TP2 (1:2) \'96 \uc0\u1505 \u1490 \u1497 \u1512 \u1514  \u1513 \u1500 \u1497 \u1513  \u1513 \u1504 \u1497 .\
+// TP3 (1:3) \'96 \uc0\u1505 \u1490 \u1497 \u1512 \u1514  \u1492 \u1513 \u1500 \u1497 \u1513  \u1492 \u1488 \u1495 \u1512 \u1493 \u1503  (\u1488 \u1493  TP \u1488 \u1493  \u1496 \u1512 \u1497 \u1497 \u1500 \u1497 \u1504 \u1490 ).\
+void ManagePartialTakeProfits() \{\
+    for (int i = PositionsTotal() - 1; i >= 0; i--) \{\
+        ulong ticket = PositionGetTicket(i);\
+        if (!PositionSelectByTicket(ticket)) continue;\
+\
+        string symbol = PositionGetString(POSITION_SYMBOL);\
+        double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);\
+        double stopLoss = PositionGetDouble(POSITION_SL);\
+        double volume = PositionGetDouble(POSITION_VOLUME);\
+        long type = PositionGetInteger(POSITION_TYPE);\
+\
+        double riskPips = MathAbs(entryPrice - stopLoss);\
+        if (riskPips == 0) continue;\
+\
+        double tp1 = (type == POSITION_TYPE_BUY) ? entryPrice + riskPips * 1.0 : entryPrice - riskPips * 1.0;\
+        double tp2 = (type == POSITION_TYPE_BUY) ? entryPrice + riskPips * 2.0 : entryPrice - riskPips * 2.0;\
+        double currentPrice = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);\
+\
+        int idx = i % MAX_PARTIAL_FLAGS;\
+\
+        if (!partialFlags[idx].tp1_done && ((type == POSITION_TYPE_BUY && currentPrice >= tp1) || (type == POSITION_TYPE_SELL && currentPrice <= tp1))) \{\
+            double closeVolume = NormalizeDouble(volume / 3.0, 2);\
+            if (closeVolume > 0 && trade.PositionClosePartial(ticket, closeVolume)) \{\
+                partialFlags[idx].tp1_done = true;\
+                trade.PositionModify(ticket, entryPrice, 0);\
+            \}\
+        \}\
+        else if (!partialFlags[idx].tp2_done && ((type == POSITION_TYPE_BUY && currentPrice >= tp2) || (type == POSITION_TYPE_SELL && currentPrice <= tp2))) \{\
+            double closeVolume = NormalizeDouble(volume / 2.0, 2);\
+            if (closeVolume > 0 && trade.PositionClosePartial(ticket, closeVolume)) \{\
+                partialFlags[idx].tp2_done = true;\
+                double newSL = (type == POSITION_TYPE_BUY) ? entryPrice + riskPips * 1.5 : entryPrice - riskPips * 1.5;\
+                trade.PositionModify(ticket, newSL, 0);\
+            \}\
+        \}\
+    \}\
+\}\
+\
+// --- \uc0\u1508 \u1493 \u1504 \u1511 \u1510 \u1497 \u1492  \u1495 \u1491 \u1513 \u1492  \u1500 \u1500 \u1493 \u1490  \u1506 \u1505 \u1511 \u1488 \u1493 \u1514  \u1500 \u1500 \u1502 \u1497 \u1491 \u1492  ---\
+\
+void LogTrade(ulong ticket)\
+\{\
+    if (!PositionSelectByTicket(ticket))\
+        return;\
+\
+    string symbol = PositionGetString(POSITION_SYMBOL);\
+    long type = PositionGetInteger(POSITION_TYPE);\
+    double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);\
+    double profit = PositionGetDouble(POSITION_PROFIT);\
+    double volume = PositionGetDouble(POSITION_VOLUME);\
+    datetime closeTime = TimeCurrent();\
+\
+    // \uc0\u1492 \u1493 \u1505 \u1508 \u1514  \u1512 \u1497 \u1513 \u1493 \u1501  \u1508 \u1513 \u1493 \u1496  \u1500 \u1500 \u1488  \u1508 \u1512 \u1502 \u1496 \u1512 \u1497 \u1501  \u1502 \u1493 \u1512 \u1499 \u1489 \u1497 \u1501 , \u1500 \u1513 \u1491 \u1512 \u1493 \u1490  \u1504 \u1497 \u1514 \u1503  \u1500 \u1492 \u1493 \u1505 \u1497 \u1507  \u1508 \u1512 \u1502 \u1496 \u1512 \u1497 \u1501  \u1504 \u1493 \u1505 \u1508 \u1497 \u1501 \
+    if (tradeHistoryCount < MAX_TRADE_HISTORY)\
+    \{\
+        tradeHistory[tradeHistoryCount].symbol = symbol;\
+        tradeHistory[tradeHistoryCount].direction = (type == POSITION_TYPE_BUY ? "BUY" : "SELL");\
+        tradeHistory[tradeHistoryCount].entryPrice = entryPrice;\
+        tradeHistory[tradeHistoryCount].exitPrice = 0; // \uc0\u1504 \u1506 \u1491 \u1499 \u1503  \u1489 \u1492 \u1502 \u1513 \u1498 \
+        tradeHistory[tradeHistoryCount].profit = profit;\
+        tradeHistory[tradeHistoryCount].volume = volume;\
+        tradeHistory[tradeHistoryCount].closeTime = closeTime;\
+        tradeHistory[tradeHistoryCount].score = (profit > 0) ? 1 : -1;  // \uc0\u1508 \u1513 \u1493 \u1496 , 1 \u1512 \u1493 \u1493 \u1495 , -1 \u1492 \u1508 \u1505 \u1491 \
+\
+        tradeHistoryCount++;\
+\
+        // \uc0\u1506 \u1491 \u1499 \u1493 \u1503  \u1491 \u1497 \u1504 \u1502 \u1497  \u1513 \u1500  \u1505 \u1507  \u1499 \u1504 \u1497 \u1505 \u1492  \u1500 \u1508 \u1497  \u1514 \u1493 \u1510 \u1488 \u1493 \u1514  (\u1508 \u1513 \u1496 \u1493 \u1514 )\
+        // \uc0\u1500 \u1502 \u1513 \u1500 , \u1488 \u1501  \u1492 \u1497 \u1497 \u1504 \u1493  \u1502 \u1508 \u1505 \u1497 \u1491 \u1497 \u1501  \u1492 \u1512 \u1489 \u1492 , \u1504 \u1493 \u1512 \u1497 \u1491  \u1505 \u1507  \u1499 \u1504 \u1497 \u1505 \u1492  \u1499 \u1491 \u1497  \u1500 \u1492 \u1508 \u1495 \u1497 \u1514  \u1506 \u1505 \u1511 \u1488 \u1493 \u1514 \
+        int winCount = 0;\
+        int loseCount = 0;\
+\
+        for (int i = 0; i < tradeHistoryCount; i++)\
+        \{\
+            if (tradeHistory[i].score > 0) winCount++;\
+            else if (tradeHistory[i].score < 0) loseCount++;\
+        \}\
+\
+        double winRate = (double)winCount / (winCount + loseCount);\
+\
+        // \uc0\u1491 \u1493 \u1490 \u1502 \u1488  \u1500 \u1513 \u1497 \u1504 \u1493 \u1497  \u1505 \u1507  \u1499 \u1504 \u1497 \u1505 \u1492  \u1489 \u1492 \u1514 \u1488 \u1501  \u1500 -winRate (\u1504 \u1497 \u1514 \u1503  \u1500 \u1513 \u1508 \u1512  \u1500 \u1493 \u1490 \u1497 \u1511 \u1492 )\
+        if (winRate < 0.4)\
+        \{\
+            entryThreshold = MathMax(10, entryThreshold - 5);\
+        \}\
+        else if (winRate > 0.6)\
+        \{\
+            entryThreshold = MathMin(100, entryThreshold + 5);\
+        \}\
+\
+        PrintFormat("Trade logged. WinRate=%.2f, Adjusted entryThreshold=%.2f", winRate, entryThreshold);\
+    \}\
+\}\
+\
+// --- callback \uc0\u1500 \u1496 \u1512 \u1488 \u1504 \u1494 \u1511 \u1510 \u1497 \u1493 \u1514  ---\
+\
+void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest& request, const MqlTradeResult& result)\
+\{\
+    if (trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal_type != 18) return;\
+\
+    if (!PositionSelectByTicket(trans.position)) return;\
+    double profit = PositionGetDouble(POSITION_PROFIT);\
+    long type = PositionGetInteger(POSITION_TYPE);\
+    bool isBuy = (type == POSITION_TYPE_BUY);\
+\
+    if (profit > 0)\
+    \{\
+        if (isBuy) successCounterBuy++;\
+        else successCounterSell++;\
+    \}\
+\
+    if (isBuy) tradeCounterBuy++;\
+    else tradeCounterSell++;\
+\}\
+\
+void OnTick() \{\
+    datetime now = TimeCurrent();\
+\
+    MqlDateTime nowStruct, lastStruct;\
+    TimeToStruct(now, nowStruct);\
+    TimeToStruct(lastMinute, lastStruct);\
+\
+    if (nowStruct.min != lastStruct.min || nowStruct.hour != lastStruct.hour) \{\
+        tradesOpened = 0;\
+        lastMinute = now;\
+    \}\
+\
+    DeleteExpiredOrders();\
+    CloseProfitablePositions();\
+    ManageTrailingStop();\
+\
+    for (int i = 0; i < ArraySize(symbols); i++) \{\
+        ExecuteTradeSetup(symbols[i]);\
+    \}\
+\
+    string commentText = StringFormat(\
+        "\uc0\u55357 \u56522  BUY: Lookback=%d | RetestBars=%d | EntryScore=%.1f\\n"\
+        "SELL: Lookback=%d | RetestBars=%d | EntryScore=%.1f\\n"\
+        "Trades BUY: %d | Success: %d\\n"\
+        "Trades SELL: %d | Success: %d",\
+        adaptiveLookbackBuy, adaptiveRetestBarsBuy, adaptiveEntryScoreBuy,\
+        adaptiveLookbackSell, adaptiveRetestBarsSell, adaptiveEntryScoreSell,\
+        tradeCounterBuy, successCounterBuy, tradeCounterSell, successCounterSell\
+    );\
+    Comment(commentText);\
+\}\
+}
