@@ -1,2 +1,2 @@
 # Nathan
-Trading Bot
+Trading Bot Help
